@@ -1,5 +1,11 @@
-const { chromium } = require("playwright");
 const fs = require("fs").promises;
+const { chromium } = require("playwright");
+
+function randomDelay(min = 500, max = 2000) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, Math.random() * (max - min) + min)
+  );
+}
 
 async function readURLs(filePath) {
   const data = await fs.readFile(filePath, "utf-8");
@@ -18,9 +24,18 @@ function parseURL(url) {
   };
 }
 
+// "http://ed63643ab6c7d5f00fa2:9d7a34793c919695@gw.dataimpulse.com:823"
+// https://api.ipify.org/
 async function initBrowser() {
+  // No proxy for home IP testing. To re-enable proxy, add the 'proxy' option here.
   const browser = await chromium.launch({
-    headless: true,
+    headless: false,
+    slowMo: 100,
+    proxy: {
+      server: "http://gw.dataimpulse.com:823",
+      username: "ed63643ab6c7d5f00fa2",
+      password: "9d7a34793c919695",
+    },
   });
   const context = await browser.newContext({
     userAgent:
@@ -30,15 +45,53 @@ async function initBrowser() {
   return { browser, context };
 }
 
+async function mimicHumanActions(page) {
+  // Accept cookies if the button is present
+  try {
+    await page.click('button:has-text("Accept Cookies")', { timeout: 3000 });
+    await randomDelay(500, 1500);
+  } catch (e) {}
+  // Click "Continue" on welcome dialog if present
+  try {
+    await page.click('button:has-text("Continue")', { timeout: 3000 });
+    await randomDelay(500, 1500);
+  } catch (e) {}
+  // Move mouse randomly
+  try {
+    await page.mouse.move(Math.random() * 800 + 200, Math.random() * 300 + 200);
+    await randomDelay(300, 1000);
+  } catch (e) {}
+  // Scroll down and up
+  try {
+    await page.mouse.wheel(0, 200);
+    await randomDelay(300, 1000);
+    await page.mouse.wheel(0, -200);
+    await randomDelay(300, 1000);
+  } catch (e) {}
+}
+
 async function crawlURL(page, url) {
-  let apiResponse = null;
-  await page.route("**/funnel/api/query", async (route) => {
-    const response = await route.fetch();
-    apiResponse = await response.json();
-    await route.fulfill({ response });
-  });
   await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
-  return apiResponse;
+  const title = await page.title();
+  console.log(`Loaded: ${title} | ${url}`);
+  await mimicHumanActions(page);
+  try {
+    const apiResponse = await page.waitForResponse(
+      (response) =>
+        response.url().includes("/funnel/api/query") &&
+        response.status() === 200,
+      { timeout: 30000 }
+    );
+    const data = await apiResponse.json();
+    return data;
+  } catch (e) {
+    const content = await page.content();
+    if (/captcha|are you human|verify you|error/i.test(content)) {
+      throw new Error("CAPTCHA or block page detected");
+    }
+    console.warn(`No API response for ${url}`);
+    return null;
+  }
 }
 
 async function crawlWithRetry(page, url, maxRetries = 3) {
@@ -46,14 +99,17 @@ async function crawlWithRetry(page, url, maxRetries = 3) {
     try {
       const response = await crawlURL(page, url);
       if (response) return response;
-      console.warn(`Attempt ${attempt} failed for ${url}`);
+      console.warn(`Attempt ${attempt} failed for ${url}: No API response`);
     } catch (error) {
       console.error(`Error on attempt ${attempt} for ${url}: ${error.message}`);
       if (attempt === maxRetries)
-        throw new Error(`Failed after ${maxRetries} attempts: ${url}`);
-      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+        return {
+          error: `Failed after ${maxRetries} attempts: ${url} - ${error.message}`,
+        };
+      await randomDelay(2000 * attempt, 3000 * attempt);
     }
   }
+  return null;
 }
 
 async function saveResponse(url, response) {
@@ -70,7 +126,7 @@ async function logErrors(results) {
   }
 }
 
-async function crawlAllURLs(urls, concurrency = 3) {
+async function crawlAllURLs(urls, concurrency = 1) {
   await fs.mkdir("output", { recursive: true });
   const { browser, context } = await initBrowser();
   const results = [];
@@ -87,17 +143,21 @@ async function crawlAllURLs(urls, concurrency = 3) {
         const page = pages[index % concurrency];
         try {
           const response = await crawlWithRetry(page, url);
-          await saveResponse(url, response);
-          return { url, status: "success" };
+          if (response && !response.error) {
+            await saveResponse(url, response);
+            return { url, status: "success" };
+          } else {
+            const errorMsg =
+              response && response.error ? response.error : "No API response";
+            return { url, status: "failed", error: errorMsg };
+          }
         } catch (error) {
           return { url, status: "failed", error: error.message };
         }
       })
     );
     results.push(...batchResults);
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.random() * 2000 + 1000)
-    );
+    await randomDelay(1000, 3000);
   }
 
   await logErrors(results);
@@ -109,9 +169,16 @@ async function crawlAllURLs(urls, concurrency = 3) {
 async function main() {
   const urls = await readURLs("jetjobs.txt");
   console.log(`Processing ${urls.length} URLs`);
-  const testURLs = urls.slice(0, 5); // Test with first 5 URLs
-  const results = await crawlAllURLs(testURLs, 3);
-  console.log("Crawl completed:", results);
+  const testURLs = urls.slice(0, 3); // Test with first 3 URLs
+  const results = await crawlAllURLs(testURLs, 1);
+  const successCount = results.filter((r) => r.status === "success").length;
+  const failCount = results.filter((r) => r.status === "failed").length;
+  console.log(
+    `Crawl completed. Success: ${successCount}, Failed: ${failCount}`
+  );
+  if (failCount > 0) {
+    console.log("See output/errors.log for details.");
+  }
 }
 
 main().catch(console.error);
