@@ -1,5 +1,6 @@
 const fs = require("fs").promises;
 const { chromium } = require("playwright");
+const { PlaywrightCrawler } = require("crawlee");
 const config = require("./config");
 
 // User agent rotation for stealth
@@ -158,7 +159,7 @@ async function initBrowser() {
 }
 
 async function handleAkamaiChallenge(page) {
-    console.log("Checking for Akamai challenges...");
+    console.log("Checking for Akamai/Cloudflare challenges...");
     try {
       await page.waitForTimeout(5000); // Increased initial wait
       const challengeSelectors = [
@@ -167,33 +168,39 @@ async function handleAkamaiChallenge(page) {
         'text="Security check"',
         'text="Access denied"',
         'text="Blocked"',
+        'text="Just a moment..."', // Cloudflare specific
+        'text="Attention Required"',
         '[id*="akamai"]',
-        '[class*="akamai"]'
+        '[class*="akamai"]',
+        '[id*="cf-"]', // Cloudflare identifiers
+        '[class*="cloudflare"]',
+        'iframe[src*="cloudflare"]'
       ];
   
       for (const selector of challengeSelectors) {
         const element = await page.locator(selector).first();
         if (await element.isVisible()) {
-          console.log(`Akamai challenge detected: ${selector}`);
-          await saveScreenshot(page, 'akamai-challenge');
-          console.log("Waiting for Akamai challenge to complete...");
+          console.log(`Challenge detected: ${selector}`);
+          await saveScreenshot(page, 'challenge-detected');
+          console.log("Waiting for challenge resolution...");
           await page.waitForTimeout(45000); // Increased to 45 seconds
           if (await element.isVisible()) {
-            console.log("Akamai challenge still present, retrying navigation...");
+            console.log("Challenge still present, retrying navigation...");
             await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
             await page.waitForTimeout(45000);
             if (await element.isVisible()) {
+              await saveScreenshot(page, 'challenge-failure');
               return false;
             }
           }
-          console.log("Akamai challenge completed successfully");
+          console.log("Challenge resolved successfully");
           return true;
         }
       }
-      console.log("No Akamai challenge detected");
+      console.log("No challenge detected");
       return true;
     } catch (e) {
-      console.log("Error checking for Akamai challenge:", e.message);
+      console.log("Error checking for challenge:", e.message);
       return true;
     }
   }
@@ -408,6 +415,163 @@ async function crawlURL(page, url) {
     }
   }
 
+async function crawlWithCrawlee(urls) {
+  console.log("Starting Crawlee-based crawl for better Cloudflare bypass...");
+  
+  const results = [];
+  
+  const crawler = new PlaywrightCrawler({
+    // Use existing browser configuration
+    launchContext: {
+      launchOptions: {
+        headless: config.production.headless,
+        slowMo: config.browser.slowMo,
+        proxy: config.production.enableProxy && config.proxy.server ? config.proxy : undefined,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=TranslateUI, VizDisplayCompositor',
+          '--disable-ipc-flooding-protection',
+          '--disable-web-security',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-extensions',
+          '--no-default-browser-check',
+          '--disable-sync',
+          '--disable-translate',
+          '--hide-scrollbars',
+          '--mute-audio',
+          '--disable-background-networking',
+          '--disable-client-side-phishing-detection',
+          '--force-color-profile=srgb',
+          '--metrics-recording-only',
+          '--use-mock-keychain'
+        ]
+      }
+    },
+
+    // Context options will be set in requestHandler
+
+    // Context options moved to launchContext
+
+    // Stealth script will be added in requestHandler
+
+    // Request handler with existing logic
+    requestHandler: async ({ page, request, log }) => {
+      const url = request.url;
+      log.info(`Processing: ${url}`);
+
+      // Set context options
+      await page.setViewportSize(config.browser.viewport);
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-GB,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+        'Origin': 'https://www.easyjet.com',
+        'Referer': 'https://www.easyjet.com/'
+      });
+
+      // Add stealth script to page
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-GB', 'en'] });
+
+        const originalCanvas = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type) {
+          const context = originalCanvas.call(this, type);
+          if (type === '2d') {
+            const originalGetImageData = context.getImageData;
+            context.getImageData = function(...args) {
+              const data = originalGetImageData.apply(this, args);
+              for (let i = 0; i < data.data.length; i += 4) {
+                data.data[i] += Math.floor(Math.random() * 3) - 1;
+                data.data[i + 1] += Math.floor(Math.random() * 3) - 1;
+                data.data[i + 2] += Math.floor(Math.random() * 3) - 1;
+              }
+              return data;
+            };
+          }
+          return context;
+        };
+
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+          if (parameter === 37445) return 'Intel Inc.';
+          if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+          return getParameter.apply(this, [parameter]);
+        };
+
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) =>
+          parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(parameters);
+
+        window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+
+        const originalToString = Function.prototype.toString;
+        Function.prototype.toString = function() {
+          if (this === Function.prototype.toString) return originalToString.call(originalToString);
+          if (this === window.navigator.permissions.query) return 'function query() { [native code] }';
+          return originalToString.call(this);
+        };
+      });
+
+      try {
+        const response = await crawlURL(page, url);
+        if (response) {
+          await saveResponse(url, response);
+          results.push({ url, status: "success" });
+          log.info(`✅ Success: ${url}`);
+        } else {
+          results.push({ url, status: "failed", error: "No API response" });
+          log.error(`❌ Failed: ${url} - No API response`);
+        }
+      } catch (error) {
+        results.push({ url, status: "failed", error: error.message });
+        log.error(`❌ Failed: ${url} - ${error.message}`);
+      }
+    },
+
+    // Error handling
+    failedRequestHandler: async ({ request, log }) => {
+      log.error(`Request ${request.url} failed too many times`);
+      results.push({ url: request.url, status: "failed", error: "Max retries exceeded" });
+    },
+
+    // Concurrency and retry settings
+    maxConcurrency: config.concurrency,
+    maxRequestRetries: config.maxRetries,
+    
+    // Proxy configuration - using existing proxy setup in launchOptions
+
+    // Timeouts
+    requestHandlerTimeoutSecs: 300,
+    navigationTimeoutSecs: 60,
+  });
+
+  // Run crawler
+  await crawler.run(urls.map(url => ({ url })));
+  
+  return results;
+}
+
 async function crawlWithRetry(page, url, maxRetries = config.maxRetries) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -449,51 +613,19 @@ async function logErrors(results) {
 
 async function crawlAllURLs(urls, concurrency = config.concurrency) {
   await fs.mkdir(config.outputDir, { recursive: true });
-  const { browser, context } = await initBrowser();
-  const results = [];
-  const pages = await Promise.all(
-    Array(concurrency).fill().map(() => context.newPage())
-  );
-
-  console.log(`Starting crawl with ${concurrency} concurrent browsers...`);
-
-  for (let i = 0; i < urls.length; i += concurrency) {
-    const batch = urls.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
-      batch.map(async (url, index) => {
-        const page = pages[index % concurrency];
-        try {
-          const response = await crawlWithRetry(page, url);
-          if (response && !response.error) {
-            await saveResponse(url, response);
-            return { url, status: "success" };
-          } else {
-            const errorMsg = response && response.error ? response.error : "No API response";
-            return { url, status: "failed", error: errorMsg };
-          }
-        } catch (error) {
-          return { url, status: "failed", error: error.message };
-        }
-      })
-    );
-    results.push(...batchResults);
-
-    const processed = results.length;
-    const successCount = results.filter(r => r.status === "success").length;
-    console.log(`Progress: ${processed}/${urls.length} (${((processed/urls.length)*100).toFixed(1)}%) - Success: ${successCount}`);
-    await randomDelay(5000, 10000);
-  }
-
+  
+  // Use Crawlee for better Cloudflare bypass
+  console.log("Using Crawlee for enhanced Cloudflare bypass...");
+  const results = await crawlWithCrawlee(urls);
+  
   await logErrors(results);
-  await context.close();
-  await browser.close();
   return results;
 }
 
 async function main() {
-  console.log("=== EasyJet Data Crawler - Optimized for Speed and Anti-Detection ===");
+  console.log("=== EasyJet Data Crawler - Enhanced with Crawlee for Cloudflare Bypass ===");
   console.log(`Configuration: ${config.concurrency} concurrent browsers, ${config.maxRetries} max retries`);
-  console.log(`Proxy: ${config.production.enableProxy ? 'Enabled' : 'Disabled'}, Akamai Bypass: Enabled`);
+  console.log(`Proxy: ${config.production.enableProxy ? 'Enabled' : 'Disabled'}, Crawlee Cloudflare Bypass: Enabled`);
 
   const urls = await readURLs(config.inputFile);
   console.log(`Found ${urls.length} URLs to process`);
@@ -541,7 +673,7 @@ async function main() {
       concurrency: config.concurrency,
       maxRetries: config.maxRetries,
       headless: config.production.headless,
-      akamaiBypass: config.production.enableAkamaiBypass
+      crawleeCloudflareBypass: true
     }
   };
   await fs.writeFile(`${config.outputDir}/summary.json`, JSON.stringify(summary, null, 2));
