@@ -1,9 +1,0 @@
-{
-	"id": "BewMwpdhWkXNtwr",
-	"json": "{\"id\":\"BewMwpdhWkXNtwr\",\"url\":\"https://www.easyjet.com/deeplink?lang=EN&dep=LGW&dest=FAO&dd=2025-12-31&apax=1&cpax=0&ipax=0\",\"loadedUrl\":\"https://www.easyjet.com/en/buy/flights\",\"uniqueKey\":\"https://www.easyjet.com/deeplink?apax=1&cpax=0&dd=2025-12-31&dep=LGW&dest=FAO&ipax=0&lang=EN\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":0,\"errorMessages\":[],\"headers\":{},\"userData\":{\"__crawlee\":{\"state\":4}},\"handledAt\":\"2025-07-18T01:41:38.591Z\"}",
-	"method": "GET",
-	"orderNo": null,
-	"retryCount": 0,
-	"uniqueKey": "https://www.easyjet.com/deeplink?apax=1&cpax=0&dd=2025-12-31&dep=LGW&dest=FAO&ipax=0&lang=EN",
-	"url": "https://www.easyjet.com/deeplink?lang=EN&dep=LGW&dest=FAO&dd=2025-12-31&apax=1&cpax=0&ipax=0"
-}

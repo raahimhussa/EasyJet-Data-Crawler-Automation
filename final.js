@@ -1,683 +1,307 @@
-const fs = require("fs").promises;
-const { chromium } = require("playwright");
-const { PlaywrightCrawler } = require("crawlee");
-const config = require("./config");
+import { Actor } from 'apify';
+import { PuppeteerCrawler, log, utils, createPuppeteerRouter } from 'crawlee';
+import moment from 'moment';
+import fs from 'fs';
+import qs from 'querystring';
 
-// User agent rotation for stealth
-const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
-];
+const ACTOR_MEMORY_MBYTES = 8096;
 
-function getRandomUserAgent() {
-  return userAgents[Math.floor(Math.random() * userAgents.length)];
-}
+// Tools functions
+const buildAPIQuery = (
+    mode,
+    departure,
+    arrival,
+    departureDate,
+    returnDate,
+    adults,
+    children,
+    infants,
+    language,
+) => {
+    const query = {
+        AdditionalSeats: 0,
+        AdultSeats: adults || 1,
+        ChildSeats: children || 0,
+        DepartureIata: departure,
+        IncludeFlexiFares: false,
+        IncludeLowestFareSeats: true,
+        IncludePrices: true,
+        Infants: infants || 0,
+        IsTransfer: false,
+        LanguageCode: language,
+        MaxDepartureDate: moment(departureDate, 'YYYY-MM-DD').add(1, 'days').format('YYYY-MM-DD'),
+        MinDepartureDate: moment(departureDate, 'YYYY-MM-DD').subtract(1, 'days').format('YYYY-MM-DD'),
+        ArrivalIata: arrival,
+        ...(mode === 'ROUND' ? {
+            MaxReturnDate: moment(returnDate, 'YYYY-MM-DD').add(1, 'days').format('YYYY-MM-DD'),
+            MinReturnDate: moment(returnDate, 'YYYY-MM-DD').subtract(1, 'days').format('YYYY-MM-DD'),
+        } : {}),
+    };
 
-function randomDelay(min = config.delays.min, max = config.delays.max) {
-  return new Promise((resolve) =>
-    setTimeout(resolve, Math.random() * (max - min) + min)
-  );
-}
+    const queryString = Object.entries(query).reduce((arr, val) => [...arr, `${val[0]}=${val[1]}`], '').join('&');
+    return `https://www.easyjet.com/ejavailability/api/v941/availability/query?${queryString}`;
+};
 
-async function readURLs(filePath) {
-  const data = await fs.readFile(filePath, "utf-8");
-  return data
-    .split("\n")
-    .filter((url) => url.trim().startsWith("https://www.easyjet.com/deeplink"))
-    .map((url) => url.trim());
-}
+const parseDeepLink = (url) => {
+    const parsed = new URL(url);
+    const query = qs.parse(parsed.search.replace('?', ''));
 
-function parseURL(url) {
-  const params = new URL(url).searchParams;
-  return {
-    departure: params.get("dep"),
-    destination: params.get("dest"),
-    date: params.get("dd"),
-    isOneWay: params.get("isOneWay") === "off" ? false : true,
-  };
-}
+    return {
+        mode: query.rd ? 'ROUND' : 'ONE',
+        departure: query.dep,
+        arrival: query.dest,
+        departureDate: query.dd,
+        returnDate: query.rd,
+        adults: query.apax,
+        children: query.capax,
+        infants: query.ipax,
+        language: query.lang || 'EN',
+    };
+};
 
-async function initBrowser() {
-  const browserOptions = {
-    headless: config.production.headless,
-    slowMo: config.browser.slowMo,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--disable-features=TranslateUI, VizDisplayCompositor',
-      '--disable-ipc-flooding-protection',
-      '--disable-web-security',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-extensions',
-      '--no-default-browser-check',
-      '--disable-sync',
-      '--disable-translate',
-      '--hide-scrollbars',
-      '--mute-audio',
-      '--disable-background-networking',
-      '--disable-client-side-phishing-detection',
-      '--force-color-profile=srgb',
-      '--metrics-recording-only',
-      '--use-mock-keychain'
-    ]
-  };
+const getSources = async (input) => {
+    log.debug('Getting sources');
 
-  if (config.production.enableProxy && config.proxy.server) {
-    browserOptions.proxy = config.proxy;
-  }
+    const startUrls = fs.readFileSync(input.file, 'utf8').split('\n').filter((line) => line.trim().length > 0);
 
-  const browser = await chromium.launch(browserOptions);
-  const context = await browser.newContext({
-    userAgent: getRandomUserAgent(),
-    viewport: config.browser.viewport,
-    locale: 'en-GB',
-    timezoneId: 'Europe/London',
-    permissions: ['geolocation'],
-    geolocation: { longitude: -0.118092, latitude: 51.509865 },
-    extraHTTPHeaders: {
-      'Accept-Language': 'en-GB,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'DNT': '1',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'same-origin',
-      'Sec-Fetch-User': '?1',
-      'Cache-Control': 'max-age=0',
-      'Origin': 'https://www.easyjet.com',
-      'Referer': 'https://www.easyjet.com/'
+    return startUrls.map((startUrl) => ({
+        url: `https://www.easyjet.com/en/policy/accessibility`,
+        uniqueKey: startUrl,
+        userData: {
+            label: 'HOME',
+            ...parseDeepLink(startUrl),
+            startUrl,
+        },
+    }));
+};
+
+const validateInput = (input) => {
+    const { file } = input;
+
+    if (!file || file?.length === 0) {
+        throw new Error('Input file is required');
     }
-  });
+};
 
-  // Advanced stealth script for Akamai and other bot detection
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-GB', 'en'] });
+const createProxyConfiguration = async ({
+    proxyConfig,
+    required = true,
+    force = Actor.isAtHome(),
+    blacklist = ['GOOGLESERP'],
+    hint = [],
+}) => {
+    const configuration = await Actor.createProxyConfiguration(proxyConfig);
 
-    // Spoof canvas fingerprint
-    const originalCanvas = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function(type) {
-      const context = originalCanvas.call(this, type);
-      if (type === '2d') {
-        const originalGetImageData = context.getImageData;
-        context.getImageData = function(...args) {
-          const data = originalGetImageData.apply(this, args);
-          for (let i = 0; i < data.data.length; i += 4) {
-            data.data[i] += Math.floor(Math.random() * 3) - 1;
-            data.data[i + 1] += Math.floor(Math.random() * 3) - 1;
-            data.data[i + 2] += Math.floor(Math.random() * 3) - 1;
-          }
-          return data;
-        };
-      }
-      return context;
-    };
+    // this works for custom proxyUrls
+    if (Actor.isAtHome() && required) {
+        if (!configuration || (!configuration.usesApifyProxy && (!configuration.proxyUrls || !configuration.proxyUrls.length)) || !configuration.newUrl()) {
+            throw new Error('\n=======\nYou must use Apify proxy or custom proxy URLs\n\n=======');
+        }
+    }
 
-    // Spoof WebGL
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-      if (parameter === 37445) return 'Intel Inc.';
-      if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-      return getParameter.apply(this, [parameter]);
-    };
-
-    // Override permissions
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) =>
-      parameters.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
-        : originalQuery(parameters);
-
-    // Override chrome object
-    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-
-    // Override toString for stealth
-    const originalToString = Function.prototype.toString;
-    Function.prototype.toString = function() {
-      if (this === Function.prototype.toString) return originalToString.call(originalToString);
-      if (this === window.navigator.permissions.query) return 'function query() { [native code] }';
-      return originalToString.call(this);
-    };
-  });
-
-  return { browser, context };
-}
-
-async function handleAkamaiChallenge(page) {
-    console.log("Checking for Akamai/Cloudflare challenges...");
-    try {
-      await page.waitForTimeout(5000); // Increased initial wait
-      const challengeSelectors = [
-        'text="Checking your browser"',
-        'text="Please wait while we verify"',
-        'text="Security check"',
-        'text="Access denied"',
-        'text="Blocked"',
-        'text="Just a moment..."', // Cloudflare specific
-        'text="Attention Required"',
-        '[id*="akamai"]',
-        '[class*="akamai"]',
-        '[id*="cf-"]', // Cloudflare identifiers
-        '[class*="cloudflare"]',
-        'iframe[src*="cloudflare"]'
-      ];
-  
-      for (const selector of challengeSelectors) {
-        const element = await page.locator(selector).first();
-        if (await element.isVisible()) {
-          console.log(`Challenge detected: ${selector}`);
-          await saveScreenshot(page, 'challenge-detected');
-          console.log("Waiting for challenge resolution...");
-          await page.waitForTimeout(45000); // Increased to 45 seconds
-          if (await element.isVisible()) {
-            console.log("Challenge still present, retrying navigation...");
-            await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
-            await page.waitForTimeout(45000);
-            if (await element.isVisible()) {
-              await saveScreenshot(page, 'challenge-failure');
-              return false;
+    // check when running on the platform by default
+    if (force) {
+        // only when actually using Apify proxy it needs to be checked for the groups
+        if (configuration && configuration.usesApifyProxy) {
+            if (blacklist.some((blacklisted) => (configuration.groups || []).includes(blacklisted))) {
+                throw new Error(`\n=======\nThese proxy groups cannot be used in this actor. Choose other group or contact support@apify.com to give you proxy trial:\n\n*  ${blacklist.join('\n*  ')}\n\n=======`);
             }
-          }
-          console.log("Challenge resolved successfully");
-          return true;
+
+            // specific non-automatic proxy groups like RESIDENTIAL, not an error, just a hint
+            if (hint.length && !hint.some((group) => (configuration.groups || []).includes(group))) {
+                log.info(`\n=======\nYou can pick specific proxy groups for better experience:\n\n*  ${hint.join('\n*  ')}\n\n=======`);
+            }
         }
-      }
-      console.log("No challenge detected");
-      return true;
-    } catch (e) {
-      console.log("Error checking for challenge:", e.message);
-      return true;
     }
-  }
 
-async function handleErrorPopup(page) {
-  try {
-    const errorPopup = await page.locator('text="Error"').first();
-    if (await errorPopup.isVisible()) {
-      console.log("EasyJet error popup detected, attempting to close...");
-      try {
-        await page.click('button:has-text("Exit to homepage")', { timeout: 3000 });
-        await randomDelay(1000, 2000);
-        return true;
-      } catch (e) {
-        console.log("Could not close error popup");
-        return true;
-      }
-    }
-  } catch (e) {}
-  return false;
-}
+    return configuration;
+};
 
-async function mimicHumanActions(page) {
-    const hadError = await handleErrorPopup(page);
-    if (hadError) {
-      throw new Error("EasyJet error popup encountered");
-    }
-  
-    await randomDelay(2000, 4000);
-  
-    // Handle Cookies popup
-    try {
-      const cookiePopup = await page.locator('div[role="dialog"]:has-text("Cookies")').first();
-      if (await cookiePopup.isVisible()) {
-        console.log("Cookies popup detected, attempting to accept...");
-        // Look for an accept button (adjust selector based on actual HTML)
-        const acceptButton = await page.locator('button:has-text("Accept")').first();
-        if (await acceptButton.isVisible()) {
-          await acceptButton.click({ delay: 150 });
-          console.log("Accepted cookies");
-        } else {
-          console.log("No explicit Accept button found, assuming auto-close or external action");
-        }
-        await randomDelay(1500, 3000);
-      }
-    } catch (e) {
-      console.log("No Cookies popup found or failed to handle:", e.message);
-    }
-  
-    // Handle Welcome to easyJet popup
-    try {
-      const welcomePopup = await page.locator('div[role="dialog"]:has-text("Welcome to easyJet")').first();
-      if (await welcomePopup.isVisible()) {
-        console.log("Welcome popup detected, clicking Continue...");
-        const continueButton = await page.locator('button:has-text("Continue")').first();
-        if (await continueButton.isVisible()) {
-          await continueButton.click({ delay: 150 });
-          console.log("Clicked Continue");
-          await page.waitForSelector('text="Welcome to easyJet"', { state: 'detached', timeout: 10000 });
-        }
-        await randomDelay(2000, 4000);
-      }
-    } catch (e) {
-      console.log("No Welcome popup found or failed to handle:", e.message);
-    }
-  
-    // Human-like behavior
-    for (let i = 0; i < 5; i++) {
-      try {
-        const x = Math.random() * 1000 + 200;
-        const y = Math.random() * 600 + 200;
-        const steps = Math.floor(Math.random() * 20) + 10;
-        await page.mouse.move(x, y, { steps });
-        await randomDelay(300, 1200);
-      } catch (e) {}
-    }
-  
-    try {
-      const scrollAmount = Math.random() * 400 + 200;
-      await page.mouse.wheel(0, scrollAmount);
-      await randomDelay(800, 2000);
-      await page.mouse.wheel(0, -(Math.random() * 300 + 100));
-      await randomDelay(800, 2000);
-    } catch (e) {}
-  
-    try {
-      const clickableElements = await page.locator('a, button, [role="button"], input, select').all();
-      if (clickableElements.length > 0) {
-        const randomElement = clickableElements[Math.floor(Math.random() * Math.min(clickableElements.length, 8))];
-        if (await randomElement.isVisible()) {
-          await randomElement.hover();
-          await randomDelay(300, 800);
-        }
-      }
-    } catch (e) {}
-  }
+// Router setup
+const router = createPuppeteerRouter();
 
-async function saveScreenshot(page, errorType) {
-  if (!config.production.saveScreenshots) return;
-  try {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `${config.outputDir}/screenshot-${errorType}-${timestamp}.png`;
-    await page.screenshot({ path: filename, fullPage: true });
-    console.log(`Screenshot saved: ${filename}`);
-  } catch (e) {
-    console.warn(`Failed to save screenshot: ${e.message}`);
-  }
-}
+// Fetches home
+router.addHandler('HOME', async ({ page, request }) => {
+    const {
+        startUrl,
+        mode,
+        departure,
+        arrival,
+        departureDate,
+        returnDate,
+        adults,
+        children,
+        infants,
+        language,
+    } = request.userData;
 
-async function crawlURL(page, url) {
-    try {
-      await page.context().clearCookies();
-  
-      console.log("Navigating to EasyJet homepage first...");
-      await page.goto("https://www.easyjet.com", {
-        waitUntil: "domcontentloaded",
-        timeout: 30000
-      });
-      await randomDelay(2000, 4000);
-  
-      console.log(`Navigating to ${url}...`);
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: config.pageLoadTimeout
-      });
-  
-      const title = await page.title();
-      console.log(`Loaded: ${title} | ${url}`);
-  
-      if (title.includes("Access Denied") || title.includes("Blocked")) {
-        await saveScreenshot(page, "access-denied");
-        throw new Error("Access denied by EasyJet");
-      }
-  
-      const akamaiSuccess = await handleAkamaiChallenge(page);
-      if (!akamaiSuccess) {
-        console.log("Retrying navigation due to Akamai challenge failure...");
-        await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
-        const retryAkamaiSuccess = await handleAkamaiChallenge(page);
-        if (!retryAkamaiSuccess) {
-          await saveScreenshot(page, "akamai-failure");
-          throw new Error("Akamai challenge failed after retry");
-        }
-      }
-  
-      await mimicHumanActions(page);
-  
-      try {
-        const errorPopup = await page.locator('text="Error"').first();
-        if (await errorPopup.isVisible()) {
-          const errorId = await page.locator('text=/\\[ID: [a-f0-9-]+\\]/').textContent() || "No ID found";
-          console.warn(`EasyJet error popup detected for ${url}: ${errorId}`);
-          await saveScreenshot(page, "error-popup");
-          throw new Error(`EasyJet server error: ${errorId}`);
-        }
-      } catch (e) {}
-  
-      const content = await page.content();
-      const blockingKeywords = [
-        'captcha',
-        'are you human',
-        'verify you',
-        'access denied',
-        'blocked',
-        'security check',
-        'bot detection',
-        'cloudflare',
-        'please wait while we verify'
-      ];
-  
-      const hasBlocking = blockingKeywords.some(keyword =>
-        content.toLowerCase().includes(keyword.toLowerCase())
-      );
-  
-      if (hasBlocking) {
-        if (content.includes("We're very sorry but something has gone wrong")) {
-          await saveScreenshot(page, "server-error");
-          throw new Error("EasyJet server error detected");
-        }
-        if (content.includes("Access Denied") || content.includes("Blocked")) {
-          await saveScreenshot(page, "access-denied");
-          throw new Error("Access denied by EasyJet");
-        }
-        await saveScreenshot(page, "captcha-block");
-        throw new Error("CAPTCHA or block page detected");
-      }
-  
-      console.log("Waiting for API response...");
-      const apiResponse = await page.waitForResponse(
-        (response) =>
-          response.url().includes("/funnel/api/query/search/airports") &&
-          response.status() === 200,
-        { timeout: config.apiResponseTimeout * 2 } // Increased to handle 25-second delay
-      );
-  
-      const data = await apiResponse.json();
-      console.log("API Response Content:", JSON.stringify(data, null, 2));
-  
-      if (!data || Object.keys(data).length === 0) {
-        await saveScreenshot(page, "empty-api-response");
-        throw new Error("Empty or invalid API response received");
-      }
-  
-      console.log("✅ API response received successfully!");
-      return data;
-    } catch (error) {
-      if (error.message.includes("Timeout")) {
-        await saveScreenshot(page, "timeout");
-        throw new Error(`Page load or API timeout: ${error.message}`);
-      }
-      throw error;
-    }
-  }
+    const apiUrl = buildAPIQuery(
+        mode,
+        departure,
+        arrival,
+        departureDate,
+        returnDate,
+        adults,
+        children,
+        infants,
+        language,
+    );
 
-async function crawlWithCrawlee(urls) {
-  console.log("Starting Crawlee-based crawl for better Cloudflare bypass...");
-  
-  const results = [];
-  
-  const crawler = new PlaywrightCrawler({
-    // Use existing browser configuration
-    launchContext: {
-      launchOptions: {
-        headless: config.production.headless,
-        slowMo: config.browser.slowMo,
-        proxy: config.production.enableProxy && config.proxy.server ? config.proxy : undefined,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu',
-          '--disable-background-timer-throttling',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-renderer-backgrounding',
-          '--disable-features=TranslateUI, VizDisplayCompositor',
-          '--disable-ipc-flooding-protection',
-          '--disable-web-security',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-extensions',
-          '--no-default-browser-check',
-          '--disable-sync',
-          '--disable-translate',
-          '--hide-scrollbars',
-          '--mute-audio',
-          '--disable-background-networking',
-          '--disable-client-side-phishing-detection',
-          '--force-color-profile=srgb',
-          '--metrics-recording-only',
-          '--use-mock-keychain'
-        ]
-      }
-    },
-
-    // Context options will be set in requestHandler
-
-    // Context options moved to launchContext
-
-    // Stealth script will be added in requestHandler
-
-    // Request handler with existing logic
-    requestHandler: async ({ page, request, log }) => {
-      const url = request.url;
-      log.info(`Processing: ${url}`);
-
-      // Set context options
-      await page.setViewportSize(config.browser.viewport);
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'en-GB,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'Origin': 'https://www.easyjet.com',
-        'Referer': 'https://www.easyjet.com/'
-      });
-
-      // Add stealth script to page
-      await page.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-GB', 'en'] });
-
-        const originalCanvas = HTMLCanvasElement.prototype.getContext;
-        HTMLCanvasElement.prototype.getContext = function(type) {
-          const context = originalCanvas.call(this, type);
-          if (type === '2d') {
-            const originalGetImageData = context.getImageData;
-            context.getImageData = function(...args) {
-              const data = originalGetImageData.apply(this, args);
-              for (let i = 0; i < data.data.length; i += 4) {
-                data.data[i] += Math.floor(Math.random() * 3) - 1;
-                data.data[i + 1] += Math.floor(Math.random() * 3) - 1;
-                data.data[i + 2] += Math.floor(Math.random() * 3) - 1;
-              }
-              return data;
-            };
-          }
-          return context;
-        };
-
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-          if (parameter === 37445) return 'Intel Inc.';
-          if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-          return getParameter.apply(this, [parameter]);
-        };
-
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) =>
-          parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : originalQuery(parameters);
-
-        window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-
-        const originalToString = Function.prototype.toString;
-        Function.prototype.toString = function() {
-          if (this === Function.prototype.toString) return originalToString.call(originalToString);
-          if (this === window.navigator.permissions.query) return 'function query() { [native code] }';
-          return originalToString.call(this);
-        };
-      });
-
-      try {
-        const response = await crawlURL(page, url);
-        if (response) {
-          await saveResponse(url, response);
-          results.push({ url, status: "success" });
-          log.info(`✅ Success: ${url}`);
-        } else {
-          results.push({ url, status: "failed", error: "No API response" });
-          log.error(`❌ Failed: ${url} - No API response`);
-        }
-      } catch (error) {
-        results.push({ url, status: "failed", error: error.message });
-        log.error(`❌ Failed: ${url} - ${error.message}`);
-      }
-    },
-
-    // Error handling
-    failedRequestHandler: async ({ request, log }) => {
-      log.error(`Request ${request.url} failed too many times`);
-      results.push({ url: request.url, status: "failed", error: "Max retries exceeded" });
-    },
-
-    // Concurrency and retry settings
-    maxConcurrency: config.concurrency,
-    maxRequestRetries: config.maxRetries,
-    
-    // Proxy configuration - using existing proxy setup in launchOptions
-
-    // Timeouts
-    requestHandlerTimeoutSecs: 300,
-    navigationTimeoutSecs: 60,
-  });
-
-  // Run crawler
-  await crawler.run(urls.map(url => ({ url })));
-  
-  return results;
-}
-
-async function crawlWithRetry(page, url, maxRetries = config.maxRetries) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await crawlURL(page, url);
-      if (response) return response;
-      console.warn(`Attempt ${attempt} failed for ${url}: No API response`);
-    } catch (error) {
-      console.error(`Error on attempt ${attempt} for ${url}: ${error.message}`);
-      const delay = error.message.includes("EasyJet server error") || error.message.includes("Akamai")
-        ? [8000 * attempt * config.delays.retryMultiplier, 15000 * attempt * config.delays.retryMultiplier]
-        : [3000 * attempt * config.delays.retryMultiplier, 6000 * attempt * config.delays.retryMultiplier];
-      await randomDelay(delay[0], delay[1]);
-      if (attempt === maxRetries) {
-        return { error: `Failed after ${maxRetries} attempts: ${url} - ${error.message}` };
-      }
-    }
-  }
-  return null;
-}
-
-async function saveResponse(url, response) {
-  const { departure, destination, date } = parseURL(url);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const filename = `${config.outputDir}/${departure}-${destination}-${date}-${timestamp}.json`;
-  await fs.writeFile(filename, JSON.stringify({ url, timestamp: new Date().toISOString(), data: response }, null, 2));
-  console.log(`Saved response for ${url} to ${filename}`);
-}
-
-async function logErrors(results) {
-  const errors = results.filter((r) => r.status === "failed");
-  if (errors.length) {
-    const errorLog = errors.map(({ url, error }) => ({ url, error, timestamp: new Date().toISOString() }));
-    await fs.writeFile(`${config.outputDir}/errors.log`, JSON.stringify(errorLog, null, 2));
-    const csvContent = errorLog.map(e => `"${e.url.replace(/"/g, '""')}","${e.error.replace(/"/g, '""')}","${e.timestamp}"`).join("\n");
-    await fs.writeFile(`${config.outputDir}/errors.csv`, `URL,Error,Timestamp\n${csvContent}`);
-    console.log(`Error log saved to ${config.outputDir}/errors.log and errors.csv`);
-  }
-}
-
-async function crawlAllURLs(urls, concurrency = config.concurrency) {
-  await fs.mkdir(config.outputDir, { recursive: true });
-  
-  // Use Crawlee for better Cloudflare bypass
-  console.log("Using Crawlee for enhanced Cloudflare bypass...");
-  const results = await crawlWithCrawlee(urls);
-  
-  await logErrors(results);
-  return results;
-}
-
-async function main() {
-  console.log("=== EasyJet Data Crawler - Enhanced with Crawlee for Cloudflare Bypass ===");
-  console.log(`Configuration: ${config.concurrency} concurrent browsers, ${config.maxRetries} max retries`);
-  console.log(`Proxy: ${config.production.enableProxy ? 'Enabled' : 'Disabled'}, Crawlee Cloudflare Bypass: Enabled`);
-
-  const urls = await readURLs(config.inputFile);
-  console.log(`Found ${urls.length} URLs to process`);
-
-  const urlsToProcess = config.production.maxUrlsPerRun ? urls.slice(0, config.production.maxUrlsPerRun) : urls;
-  console.log(`Processing ${urlsToProcess.length} URLs`);
-
-  const startTime = Date.now();
-  const results = await crawlAllURLs(urlsToProcess, config.concurrency);
-  const endTime = Date.now();
-
-  const successCount = results.filter((r) => r.status === "success").length;
-  const failCount = results.filter((r) => r.status === "failed").length;
-  const duration = ((endTime - startTime) / 1000 / 60).toFixed(1);
-
-  console.log(`\n=== CRAWL SUMMARY ===`);
-  console.log(`Total URLs processed: ${results.length}`);
-  console.log(`Successful: ${successCount}`);
-  console.log(`Failed: ${failCount}`);
-  console.log(`Success rate: ${((successCount / results.length) * 100).toFixed(1)}%`);
-  console.log(`Duration: ${duration} minutes`);
-  console.log(`Average: ${(results.length / (duration / 60)).toFixed(1)} URLs/minute`);
-
-  if (failCount > 0) {
-    console.log("\n=== FAILED URLS (first 10) ===");
-    results.filter(r => r.status === "failed").slice(0, 10).forEach(r => {
-      console.log(`- ${r.url}`);
-      console.log(`  Error: ${r.error}`);
+    const data = await page.evaluate(({ url }) => {
+        return fetch(url, {
+            headers: {
+                accept: 'application/json, text/plain, */*',
+                'accept-language': 'en-US,en;q=0.9',
+                adrum: 'isAjax:true',
+                'cache-control': 'no-cache',
+                pragma: 'no-cache',
+                'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'same-origin',
+                'x-b2b-misc': '',
+                'x-requested-with': 'XMLHttpRequest',
+            },
+            referrer: 'https://www.easyjet.com/en/buy/flights?isOneWay=off&pid=www.easyjet.com',
+            referrerPolicy: 'strict-origin-when-cross-origin',
+            body: null,
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'include',
+        }).then((res) => res.text());
+    }, {
+        url: apiUrl,
     });
-    if (failCount > 10) {
-      console.log(`... and ${failCount - 10} more failures`);
-    }
-    console.log(`\nSee ${config.outputDir}/errors.log and errors.csv for details`);
-  }
 
-  const summary = {
-    timestamp: new Date().toISOString(),
-    totalUrls: results.length,
-    successful: successCount,
-    failed: failCount,
-    successRate: ((successCount / results.length) * 100).toFixed(1),
-    duration: `${duration} minutes`,
-    urlsPerMinute: (results.length / (duration / 60)).toFixed(1),
-    config: {
-      concurrency: config.concurrency,
-      maxRetries: config.maxRetries,
-      headless: config.production.headless,
-      crawleeCloudflareBypass: true
+    if (data.includes('Access Denied')) {
+        throw new Error('We got blocked. Retrying');
     }
-  };
-  await fs.writeFile(`${config.outputDir}/summary.json`, JSON.stringify(summary, null, 2));
-  console.log(`\nSummary saved to ${config.outputDir}/summary.json`);
-}
 
+    const json = JSON.parse(data);
+    const Dataset = await Actor.openDataset(`${departure}-${arrival}-${mode === 'ROUND' ? 'RT' : 'OW'}-${departureDate}`);
+    log.info(`CRAWLER: -- Found ${json.AvailableFlights.length} flights on ${startUrl}`);
+    await Dataset.pushData(json);
+
+    log.debug(`CRAWLER: -- Fetched flights on ${startUrl}`);
+});
+
+// Main execution
+const main = async () => {
+    // Initialize the Apify SDK
+    await Actor.init();
+
+    log.info('PHASE -- STARTING ACTOR.');
+
+    const input = await Actor.getInput() || {};
+
+    if (process.argv.length > 2) {
+        const args = process.argv;
+
+        input.file = args[2];
+        input.proxy = {
+            useApifyProxy: false,
+            proxyUrls: [
+                'http://9721cb34661a4d2278cd__cr.us,gb,de:ffca0a236c645afc@gw.dataimpulse.com:823'   //Easyjet plan
+            ],
+        };
+    }
+
+    // Validate input
+    validateInput(input);
+
+    // Proxy configuration
+    const proxyConfiguration = await createProxyConfiguration({
+        proxyConfig: input.proxy,
+        required: true,
+    });
+
+    const REQUEST_QUEUE_NAME = moment().format('YYYYMMDDHHmmssSSS');
+
+    log.info('PHASE -- SETTING UP CRAWLER.');
+    const crawler = new PuppeteerCrawler({
+        requestQueue: await Actor.openRequestQueue(REQUEST_QUEUE_NAME),
+        requestHandlerTimeoutSecs: 120,
+        useSessionPool: true,
+        maxRequestRetries: 200,
+        proxyConfiguration,
+        minConcurrency: 15,
+        maxConcurrency: 15,
+        launchContext: {
+            useChrome: true,
+            launchOptions: {
+                headless: false,
+            },
+        },
+        browserPoolOptions: {
+            fingerprintOptions: {
+                fingerprintGeneratorOptions: {
+                    devices: ['desktop'],
+                    operatingSystems: ['windows', 'macos'],
+                    browsers: ['chrome', 'edge', 'firefox', 'safari'],
+                },
+            },
+        },
+        preNavigationHooks: [
+            async ({ request, page }) => {
+                // Block unnecessary file requests
+                await utils.puppeteer.blockRequests(page, {
+                    extraUrlPatterns: [
+                        '.css',
+                        '.jpg',
+                        '.jpeg',
+                        '.png',
+                        '.svg',
+                        '.gif',
+                        '.woff',
+                        '.pdf',
+                        '.zip',
+                        '*doubleclick*',
+                        '*advertising.com*',
+                        '*bing.com*',
+                        '*bttrack.com*',
+                        '*facebook*',
+                        '*linkedin*',
+                        '*driftt*',
+                        '*adsrvr*',
+                        '*adobedtm*',
+                        '*google-analytics*',
+                        '*redditstatic*',
+                        '*googletagmanager*',
+                        '*sentry*',
+                        '*ensighten*',
+                        '*appdynamic*',
+                        '*googleoptimize*',
+                    ],
+                });
+
+                return page.goto(request.url, {
+                    waitFor: 'domcontentloaded',
+                    timeout: 15000,
+                });
+            },
+        ],
+        requestHandler: async (context) => {
+            const { request } = context;
+            log.debug(`CRAWLER -- Processing ${request.url}`);
+
+            // Add to context
+            context.input = input;
+
+            // Redirect to route
+            await router(context);
+        },
+    });
+
+    log.info('CRAWLER STARTED.');
+    const pages = await getSources(input);
+    await crawler.run(pages);
+
+    await Actor.exit();
+
+    log.info('ACTOR FINISHED.');
+};
+
+// Run the main function
 main().catch(console.error);
