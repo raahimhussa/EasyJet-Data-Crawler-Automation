@@ -6,6 +6,34 @@ import qs from 'querystring';
 
 const ACTOR_MEMORY_MBYTES = 8096;
 
+// URL tracking variables
+let totalUrlsProcessed = 0;
+let startTime = null;
+let lastProgressTime = null;
+
+// Progress tracking function
+const updateProgress = () => {
+    const currentTime = Date.now();
+    const elapsedMinutes = (currentTime - startTime) / (1000 * 60);
+    const urlsPerMinute = totalUrlsProcessed / elapsedMinutes;
+    const targetUrlsPerMinute = 2000 / 60; // 2000 URLs in 60 minutes
+    const estimatedTimeToTarget = (2000 - totalUrlsProcessed) / urlsPerMinute;
+    
+    console.log(`\n=== PROGRESS TRACKING ===`);
+    console.log(`Total URLs processed: ${totalUrlsProcessed}`);
+    console.log(`Elapsed time: ${elapsedMinutes.toFixed(2)} minutes`);
+    console.log(`Current rate: ${urlsPerMinute.toFixed(2)} URLs/minute`);
+    console.log(`Target rate: ${targetUrlsPerMinute.toFixed(2)} URLs/minute`);
+    console.log(`Progress: ${((totalUrlsProcessed / 2000) * 100).toFixed(2)}%`);
+    
+    if (urlsPerMinute > 0) {
+        console.log(`Estimated time to reach 2000 URLs: ${estimatedTimeToTarget.toFixed(2)} minutes`);
+        console.log(`Estimated completion: ${moment().add(estimatedTimeToTarget, 'minutes').format('HH:mm:ss')}`);
+    }
+    
+    console.log(`========================\n`);
+};
+
 // Tools functions
 const buildAPIQuery = (
     mode,
@@ -184,7 +212,17 @@ router.addHandler('HOME', async ({ page, request }) => {
     log.info(`CRAWLER: -- Found ${json.AvailableFlights.length} flights on ${startUrl}`);
     await Dataset.pushData(json);
 
-    log.debug(`CRAWLER: -- Fetched flights on ${startUrl}`);
+    // Update URL counter and show progress
+    totalUrlsProcessed++;
+    const currentTime = Date.now();
+    
+    // Show progress every 50 URLs or every 5 minutes
+    if (totalUrlsProcessed % 50 === 0 || !lastProgressTime || (currentTime - lastProgressTime) > 5 * 60 * 1000) {
+        updateProgress();
+        lastProgressTime = currentTime;
+    }
+
+    log.debug(`CRAWLER: -- Fetched flights on ${startUrl} (Total: ${totalUrlsProcessed})`);
 });
 
 // Main execution
@@ -210,6 +248,14 @@ const main = async () => {
 
     // Validate input
     validateInput(input);
+
+    // Initialize tracking variables
+    startTime = Date.now();
+    lastProgressTime = startTime;
+    console.log(`\n=== CRAWLER STARTED ===`);
+    console.log(`Start time: ${moment(startTime).format('YYYY-MM-DD HH:mm:ss')}`);
+    console.log(`Target: 2000 URLs in 1 hour`);
+    console.log(`========================\n`);
 
     // Proxy configuration
     const proxyConfiguration = await createProxyConfiguration({
@@ -297,6 +343,21 @@ const main = async () => {
     log.info('CRAWLER STARTED.');
     const pages = await getSources(input);
     await crawler.run(pages);
+
+    // Final summary
+    const endTime = Date.now();
+    const totalTimeMinutes = (endTime - startTime) / (1000 * 60);
+    const averageRate = totalUrlsProcessed / totalTimeMinutes;
+    
+    console.log(`\n=== FINAL SUMMARY ===`);
+    console.log(`Total URLs processed: ${totalUrlsProcessed}`);
+    console.log(`Total time: ${totalTimeMinutes.toFixed(2)} minutes`);
+    console.log(`Average rate: ${averageRate.toFixed(2)} URLs/minute`);
+    console.log(`Target achieved: ${totalUrlsProcessed >= 2000 ? 'YES' : 'NO'}`);
+    if (totalUrlsProcessed >= 2000) {
+        console.log(`Time to reach 2000: ${((2000 / averageRate) * 60).toFixed(2)} minutes`);
+    }
+    console.log(`=====================\n`);
 
     await Actor.exit();
 
