@@ -4,16 +4,18 @@ import moment from 'moment';
 import fs from 'fs';
 import qs from 'querystring';
 import puppeteer from 'puppeteer-extra';
+
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
 
 puppeteer.use(StealthPlugin());
 
 const ACTOR_MEMORY_MBYTES = 8096;
+
 let totalUrlsProcessed = 0;
 let startTime = null;
 let lastProgressTime = null;
 
-// ===================== PROGRESS TRACKER =====================
 const updateProgress = () => {
     const currentTime = Date.now();
     const elapsedMinutes = (currentTime - startTime) / (1000 * 60);
@@ -34,7 +36,7 @@ const updateProgress = () => {
     console.log(`========================\n`);
 };
 
-// ===================== FUNNEL QUERY BUILDER =====================
+// --- NEW QUERY BUILDER FOR FUNNEL API ---
 const buildFunnelQuery = (departure, arrival, departureDate, adults = 1, children = 0, infants = 0) => {
     return {
         query: {
@@ -43,24 +45,24 @@ const buildFunnelQuery = (departure, arrival, departureDate, adults = 1, childre
             passengers: {
                 ADULT: adults,
                 CHILD: children,
-                INFANT: infants,
+                INFANT: infants
             },
             journeys: [
                 {
                     origin: departure,
                     destination: arrival,
-                    departureDate,
-                },
+                    departureDate
+                }
             ],
             options: {
                 includePrices: true,
-                includeFlexi: false,
-            },
-        },
+                includeFlexi: false
+            }
+        }
     };
 };
 
-// ===================== PARSE DEEPLINK =====================
+// --- Parse deeplink URLs ---
 const parseDeepLink = (url) => {
     const parsed = new URL(url);
     const query = qs.parse(parsed.search.replace('?', ''));
@@ -72,21 +74,17 @@ const parseDeepLink = (url) => {
         departureDate: query.dd,
         returnDate: query.rd,
         adults: query.apax || 1,
-        children: query.cpax || 0, // ✅ fixed key typo: should be cpax not capax
+        children: query.capax || 0,
         infants: query.ipax || 0,
         language: query.lang || 'EN',
     };
 };
 
-// ===================== INPUT & PROXY =====================
-const validateInput = (input) => {
-    if (!input.file || input.file.length === 0) throw new Error('Input file is required');
-};
-
 const getSources = async (input) => {
-    const startUrls = fs.readFileSync(input.file, 'utf8').split('\n').filter(Boolean);
+    log.debug('Getting sources');
+    const startUrls = fs.readFileSync(input.file, 'utf8').split('\n').filter((line) => line.trim().length > 0);
     return startUrls.map((startUrl) => ({
-        url: 'https://www.easyjet.com/en/policy/accessibility',
+        url: `https://www.easyjet.com/en/policy/accessibility`,
         uniqueKey: startUrl,
         userData: {
             label: 'HOME',
@@ -96,60 +94,51 @@ const getSources = async (input) => {
     }));
 };
 
-const createProxyConfiguration = async ({ proxyConfig, required = true }) => {
+const validateInput = (input) => {
+    if (!input.file || input.file.length === 0) throw new Error('Input file is required');
+};
+
+const createProxyConfiguration = async ({
+    proxyConfig,
+    required = true,
+    force = Actor.isAtHome(),
+    blacklist = ['GOOGLESERP'],
+    hint = [],
+}) => {
     const configuration = await Actor.createProxyConfiguration(proxyConfig);
     if (Actor.isAtHome() && required) {
-        if (
-            !configuration ||
-            (!configuration.usesApifyProxy && (!configuration.proxyUrls || !configuration.proxyUrls.length)) ||
-            !configuration.newUrl()
-        ) {
-            throw new Error('\n=======\nYou must use Apify proxy or custom proxy URLs\n=======\n');
+        if (!configuration || (!configuration.usesApifyProxy && (!configuration.proxyUrls || !configuration.proxyUrls.length)) || !configuration.newUrl()) {
+            throw new Error('\n=======\nYou must use Apify proxy or custom proxy URLs\n\n=======');
         }
     }
     return configuration;
 };
 
-// ===================== ROUTER =====================
+// ROUTER SETUP
 const router = createPuppeteerRouter();
 
 router.addHandler('HOME', async ({ page, request }) => {
     const { startUrl, departure, arrival, departureDate, adults, children, infants } = request.userData;
 
-    // ✅ Handle cookie popup before doing API call
-    try {
-        const cookieBtn = await page.$('#ensCloseBanner');
-        if (cookieBtn) {
-            await cookieBtn.click();
-            log.info('Cookie banner accepted');
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-    } catch (err) {
-        log.debug('No cookie banner found or already accepted.');
-    }
-
     const apiUrl = `https://www.easyjet.com/funnel/api/query`;
     const payload = buildFunnelQuery(departure, arrival, departureDate, adults, children, infants);
 
     const data = await page.evaluate(async ({ url, payload }) => {
-        try {
-            const res = await fetch(url, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "accept": "application/json, text/plain, */*",
-                    "x-requested-with": "XMLHttpRequest"
-                },
-                body: JSON.stringify(payload),
-                credentials: "include"
-            });
-            return await res.text();
-        } catch (e) {
-            return `FETCH_ERROR:${e.message}`;
-        }
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "accept": "application/json, text/plain, */*",
+                "accept-language": "en-GB,en;q=0.9",
+                "user-agent": navigator.userAgent,
+                "x-requested-with": "XMLHttpRequest"
+            },
+            body: JSON.stringify(payload),
+            credentials: "include"
+        });
+        return res.text();
     }, { url: apiUrl, payload });
 
-    if (data.startsWith('FETCH_ERROR')) throw new Error(data);
     if (data.includes('Access Denied')) throw new Error('We got blocked. Retrying');
 
     const json = JSON.parse(data);
@@ -167,18 +156,19 @@ router.addHandler('HOME', async ({ page, request }) => {
     log.debug(`CRAWLER: -- Fetched ${startUrl} (Total: ${totalUrlsProcessed})`);
 });
 
-// ===================== MAIN EXECUTION =====================
+// MAIN EXECUTION
 const main = async () => {
     await Actor.init();
     log.info('PHASE -- STARTING ACTOR.');
 
     const input = await Actor.getInput() || {};
     if (process.argv.length > 2) {
-        input.file = process.argv[2];
+        const args = process.argv;
+        input.file = args[2];
         input.proxy = {
             useApifyProxy: false,
             proxyUrls: [
-                'http://mpuT1QFVbv_easyjet-country-GB:easyjet223@network.joinmassive.com:65534/',
+                'http://mpuT1QFVbv_easyjet-country-GB:easyjet223@network.joinmassive.com:65534/'
             ],
         };
     }
@@ -187,7 +177,6 @@ const main = async () => {
 
     startTime = Date.now();
     lastProgressTime = startTime;
-
     console.log(`\n=== CRAWLER STARTED ===`);
     console.log(`Start time: ${moment(startTime).format('YYYY-MM-DD HH:mm:ss')}`);
     console.log(`Target: 2000 URLs in 1 hour`);
@@ -203,20 +192,21 @@ const main = async () => {
 
     const crawler = new PuppeteerCrawler({
         requestQueue: await Actor.openRequestQueue(REQUEST_QUEUE_NAME),
-        requestHandlerTimeoutSecs: 240,
+        requestHandlerTimeoutSecs: 120,
         useSessionPool: true,
-        maxRequestRetries: 5,
+        maxRequestRetries: 200,
         proxyConfiguration,
-        minConcurrency: 10,
+        minConcurrency: 15,
         maxConcurrency: 15,
         launchContext: {
-            launcher: puppeteer,
-            useChrome: true,
-            launchOptions: {
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            },
-        },
+    launcher: puppeteer,
+    useChrome: true,
+    launchOptions: {
+        headless: false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    },
+},
+
         browserPoolOptions: {
             fingerprintOptions: {
                 fingerprintGeneratorOptions: {
@@ -232,20 +222,22 @@ const main = async () => {
                     extraUrlPatterns: [
                         '.css', '.jpg', '.jpeg', '.png', '.svg', '.gif', '.woff', '.pdf', '.zip',
                         '*doubleclick*', '*advertising.com*', '*bing.com*', '*facebook*',
-                        '*linkedin*', '*google-analytics*', '*googletagmanager*',
+                        '*linkedin*', '*google-analytics*', '*googletagmanager*'
                     ],
                 });
+
                 try {
-                    await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-                    await new Promise(resolve => setTimeout(resolve, 12000));
-                    const html = await page.content();
-                    if (html.includes('Access Denied') || html.includes('Request unsuccessful')) {
-                        throw new Error('Access Denied');
-                    }
-                } catch (err) {
-                    log.warning(`Blocked or timed out on ${request.url}: ${err.message}`);
-                    throw err;
-                }
+    await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await new Promise(resolve => setTimeout(resolve, 60000));
+    const bodyText = await page.content();
+    if (bodyText.includes('Access Denied') || bodyText.includes('Request unsuccessful')) {
+        throw new Error('Access Denied');
+    }
+} catch (err) {
+    log.warning(`Blocked or timed out on ${request.url}: ${err.message}`);
+    throw err;
+}
+
             },
         ],
         requestHandler: async (context) => {
