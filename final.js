@@ -42,6 +42,27 @@ const randomDelay = (min = 1000, max = 3000) => {
     return new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
 };
 
+// Simulate basic human-like activity to reduce bot suspicion
+const simulateHumanActivity = async (page) => {
+    try {
+        const width = 1920 + Math.floor(Math.random() * 100);
+        const height = 1080 + Math.floor(Math.random() * 100);
+        const randX = Math.floor(Math.random() * width);
+        const randY = Math.floor(Math.random() * height);
+        await page.mouse.move(randX, randY, { steps: 15 });
+        await page.waitForTimeout(300 + Math.floor(Math.random() * 700));
+        await page.mouse.wheel({ deltaY: 200 + Math.floor(Math.random() * 400) });
+        await page.waitForTimeout(500 + Math.floor(Math.random() * 1000));
+        // Light, random scrolls
+        await page.evaluate(() => {
+            const amount = 100 + Math.floor(Math.random() * 300);
+            window.scrollBy({ top: amount, behavior: 'smooth' });
+        });
+    } catch (_) {
+        // best-effort; ignore errors
+    }
+};
+
 // Parse the deeplink URL
 const parseDeepLink = (url) => {
     const parsed = new URL(url);
@@ -154,9 +175,7 @@ router.addHandler('SEARCH_FLIGHTS', async ({ page, request, crawler }) => {
             isMobile: false,
         });
 
-        // Set up request interception to capture API responses
-        await page.setRequestInterception(true);
-        
+        // Avoid enabling request interception globally; rely on response listeners
         let apiResponse = null;
         let capturedUrls = [];
         
@@ -179,7 +198,12 @@ router.addHandler('SEARCH_FLIGHTS', async ({ page, request, crawler }) => {
                     }
                     
                     // Check if this is the availability API response
-                    if (url.includes('availability') || url.includes('flight') || url.includes('search')) {
+                    if (
+                        url.includes('/funnel/api/query') ||
+                        url.includes('availability') ||
+                        url.includes('flight') ||
+                        url.includes('search')
+                    ) {
                         console.log(`   📡 Found potential API: ${url.substring(0, 100)}... [${status}]`);
                         
                         const contentType = response.headers()['content-type'] || '';
@@ -215,31 +239,7 @@ router.addHandler('SEARCH_FLIGHTS', async ({ page, request, crawler }) => {
             });
         });
 
-        // Handle requests
-        page.on('request', (request) => {
-            const url = request.url();
-            
-            // Block unnecessary resources but allow API calls
-            if (
-                url.includes('.jpg') ||
-                url.includes('.jpeg') ||
-                url.includes('.png') ||
-                url.includes('.gif') ||
-                url.includes('.woff') ||
-                url.includes('.woff2') ||
-                url.includes('.ttf') ||
-                url.includes('doubleclick') ||
-                url.includes('google-analytics') ||
-                url.includes('googletagmanager') ||
-                url.includes('facebook') ||
-                url.includes('linkedin') ||
-                url.includes('twitter')
-            ) {
-                request.abort();
-            } else {
-                request.continue();
-            }
-        });
+        // Do not block resources; allow page to behave naturally to avoid detection
 
         // Navigate to the deep link URL
         console.log(`   🌐 Navigating to deeplink...`);
@@ -254,8 +254,22 @@ router.addHandler('SEARCH_FLIGHTS', async ({ page, request, crawler }) => {
         const pageUrl = page.url();
         console.log(`   🔗 Current URL: ${pageUrl}`);
         
+        // Basic block/challenge detection (Akamai/Access Denied pages)
+        try {
+            const html = await page.content();
+            if (
+                response.status() === 403 ||
+                /Access Denied|Just a moment|Request blocked|unusual traffic/i.test(html)
+            ) {
+                console.log('   🚧 Potential bot challenge detected. Applying backoff and retry.');
+                await randomDelay(10000, 20000);
+                throw new Error('Bot challenge detected');
+            }
+        } catch (_) {}
+        
         // Wait for page to load and make API calls
         console.log(`   ⏳ Waiting for API calls...`);
+        await simulateHumanActivity(page);
         await randomDelay(5000, 8000);
 
         // Try to wait for the API response
@@ -389,18 +403,21 @@ const main = async () => {
         sessionPoolOptions: {
             maxPoolSize: 50,
             sessionOptions: {
-                maxUsageCount: 30,
+                // Reduce reuse to lower bot-detection likelihood
+                maxUsageCount: 8,
             },
         },
         maxRequestRetries: 3,
         proxyConfiguration,
-        minConcurrency: 2,
-        maxConcurrency: 4,
+        // Lower concurrency to mimic human browsing and reduce pressure
+        minConcurrency: 1,
+        maxConcurrency: 1,
         launchContext: {
             launcher: puppeteer,
             useChrome: true,
             launchOptions: {
-                headless: 'false',
+                // Use a boolean false (string 'false' may be misinterpreted)
+                headless: false,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
