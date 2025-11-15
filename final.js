@@ -133,23 +133,17 @@ router.addHandler('HOME', async ({ page, request, proxyInfo }) => {
     try {
         // Navigate and wait for the page to load
         await page.goto(startUrl, { 
-            waitUntil: 'domcontentloaded', // Changed from networkidle0 for speed
-            timeout: 60000  // Reduced from 120s
+            waitUntil: 'domcontentloaded',
+            timeout: 45000  // Further reduced
         });
 
-        log.info('Page loaded, waiting for API calls...');
+        // Skip waiting for flight cards - go straight to DOM extraction
+        log.info('Page loaded, attempting immediate extraction...');
+        
+        // Minimal wait
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // Reduced wait time for flight search
-        await page.waitForSelector('[data-testid="flight-card"], .flight-card, [class*="flight"]', { 
-            timeout: 15000  // Reduced from 30s
-        }).catch(() => {
-            log.info('Flight cards selector not found, checking for data anyway...');
-        });
-
-        // Reduced extra time for API response
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced from 5s
-
-        // Check if we captured data
+        // Check if we captured data from interception
         if (apiResponseReceived && apiDataCaptured) {
             await saveSuccessfulResult(
                 startUrl, 
@@ -164,50 +158,8 @@ router.addHandler('HOME', async ({ page, request, proxyInfo }) => {
             return;
         }
 
-        // If no data captured, try triggering the search manually
-        log.info('No API data captured yet, trying to trigger search...');
-        
-        // Look for search/continue buttons
-        const searchButtonSelectors = [
-            'button[type="submit"]',
-            'button[data-testid="search-button"]',
-            'button:has-text("Search")',
-            'button:has-text("Continue")',
-            '[data-testid="continue-button"]'
-        ];
-
-        for (const selector of searchButtonSelectors) {
-            try {
-                const button = await page.$(selector);
-                if (button) {
-                    log.info('Found search button, clicking...', { selector });
-                    await button.click();
-                    
-                    // Reduced wait after click
-                    await new Promise(resolve => setTimeout(resolve, 3000)); // Reduced from 8s
-                    
-                    if (apiResponseReceived && apiDataCaptured) {
-                        await saveSuccessfulResult(
-                            startUrl, 
-                            departure, 
-                            arrival, 
-                            departureDate, 
-                            mode, 
-                            apiDataCaptured, 
-                            'response-interception-after-click'
-                        );
-                        totalSuccessful++;
-                        return;
-                    }
-                    break;
-                }
-            } catch (err) {
-                log.debug('Button click failed', { selector, err: err.message });
-            }
-        }
-
-        // Last resort: try to extract data from the page DOM
-        log.info('Attempting to extract data from page DOM...');
+        // Skip button clicking - go straight to DOM extraction
+        log.info('Extracting data from DOM...');
         
         const pageData = await page.evaluate(() => {
             // Try to find React props or window data
@@ -313,7 +265,7 @@ const main = async () => {
 
     const crawler = new PuppeteerCrawler({
         requestQueue: await Actor.openRequestQueue(),
-        requestHandlerTimeoutSecs: 120, // Reduced from 180
+        requestHandlerTimeoutSecs: 90, // Aggressive timeout
         useSessionPool: true,
         sessionPoolOptions: {
             maxPoolSize: 40,
@@ -324,9 +276,9 @@ const main = async () => {
         maxRequestRetries: 3,
         proxyConfiguration,
         
-        minConcurrency: 20,
-        maxConcurrency: 40, // Increased for speed
-        maxRequestsPerMinute: 150, // Increased from 60
+        minConcurrency: 10,
+        maxConcurrency: 15, // Reduced to fit in 4GB RAM (15 browsers × 270MB ≈ 4GB)
+        maxRequestsPerMinute: 200, // Keep high request rate
         
         launchContext: {
             useChrome: true,
@@ -373,8 +325,8 @@ const main = async () => {
             },
         ],
         requestHandler: async (context) => {
-            // Reduced delay for speed
-            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500)); // 0.5-1.5s
+            // Minimal delay for maximum speed
+            await new Promise(resolve => setTimeout(resolve, 200)); // 200ms only
             await router(context);
         },
         failedRequestHandler: async ({ request }) => {
