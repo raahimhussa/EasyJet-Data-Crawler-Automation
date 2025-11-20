@@ -1,11 +1,20 @@
 """
-EasyJet Crawler - Pure Camoufox (No httpx transfer)
+EasyJet Crawler - Pure Camoufox (Optimized for Speed)
 
 ✅ Makes API calls directly in the browser context
 ✅ No cookie transfer issues - everything stays in browser
 ✅ Akamai can't detect the difference
+✅ Optimized for 1000+ URLs/hour throughput
+✅ Smart retry logic for blocked requests
+✅ Multiple proxy sessions to distribute load
+✅ Resource blocking for faster page loads
 
-This is slower but has 100% success rate with proper cookies.
+OPTIMIZATIONS:
+- 10 concurrent workers (default)
+- 20 proxy sessions for better distribution
+- Reduced delays while maintaining stealth
+- Blocks images/fonts/CSS for faster loading
+- Auto-retry on 403/failed requests (max 2 retries)
 
 Requirements:
 pip install 'camoufox[geoip]'
@@ -16,6 +25,7 @@ import json
 import random
 import uuid
 import time
+import os
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from camoufox.async_api import AsyncCamoufox
@@ -34,8 +44,6 @@ class BrowserWorker:
         
     async def initialize(self):
         """Start browser - no initial page load needed"""
-        print(f"🚀 [Worker {self.worker_id}] Starting browser...")
-        
         try:
             proxy_config = None
             if self.proxy_url:
@@ -52,12 +60,17 @@ class BrowserWorker:
                 humanize=True,
                 geoip=True,
                 proxy=proxy_config,
-                config={"fonts": ["en-US"]},
+                config={
+                    "fonts": ["en-US"],
+                },
+                addons=[],  # No extensions for speed
             ).__aenter__()
             
             self.page = await self.browser.new_page()
             
-            print(f"✅ [Worker {self.worker_id}] Browser ready!")
+            # Block unnecessary resources for faster loading
+            await self.page.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf}", lambda route: route.abort())
+            
             self.is_initialized = True
             
         except Exception as e:
@@ -70,17 +83,16 @@ class BrowserWorker:
         """Make API call directly in browser context - NAVIGATE TO PAGE FIRST!"""
         
         try:
-            print(f"📍 [Worker {self.worker_id}] Navigating to {departure}->{arrival}...")
-            await self.page.goto(url, wait_until="networkidle", timeout=60000)
-            await asyncio.sleep(3)  # wait for initial load
+            # Faster navigation - domcontentloaded is enough
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)  # Reduced from 3s
             
             # --- HANDLE CONTINUE BUTTON ---
             try:
                 continue_button = await self.page.query_selector("button[type='submit'], button:has-text('Continue')")
                 if continue_button:
                     await continue_button.click()
-                    print(f"🟢 [Worker {self.worker_id}] Clicked Continue button")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)  # Reduced from 2s
             except:
                 pass
             
@@ -89,29 +101,23 @@ class BrowserWorker:
                 cookie_button = await self.page.query_selector("button#ensCloseBanner, button:has-text('Accept Cookies')")
                 if cookie_button:
                     await cookie_button.click()
-                    print(f"🟢 [Worker {self.worker_id}] Accepted cookies")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)  # Reduced from 2s
             except:
                 pass
             
-            # wait a little extra to ensure cookies/session set
-            await asyncio.sleep(5)  # instead of 2-3 seconds
-            # wait a little extra to ensure cookies/session set
-            await asyncio.sleep(2)  # keep a small delay
+            # Wait for cookies/session - optimized
+            await asyncio.sleep(2)  # Reduced from 7s total
 
-            # --- HUMAN-LIKE MOUSE MOVEMENT ---
-            try:
-                await self.page.mouse.move(random.randint(100, 500), random.randint(100, 500))
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-                await self.page.mouse.click(random.randint(100, 500), random.randint(100, 500))
-                await asyncio.sleep(random.uniform(1, 2))
-                print(f"🟢 [Worker {self.worker_id}] Performed human-like mouse movement")
-            except:
-                pass
+            # --- HUMAN-LIKE MOUSE MOVEMENT (optional, faster) ---
+            if random.random() < 0.3:  # Only 30% of the time
+                try:
+                    await self.page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+                    await asyncio.sleep(random.uniform(0.2, 0.5))
+                except:
+                    pass
 
             
         except Exception as nav_error:
-            print(f"❌ [Worker {self.worker_id}] Navigation failed: {nav_error}")
             return {"status": "nav_failed"}
         
         is_round_trip = bool(ret_date)
@@ -186,7 +192,6 @@ class BrowserWorker:
                 await self.browser.__aexit__(None, None, None)
             except:
                 pass
-            print(f"🔴 [Worker {self.worker_id}] Closed")
 
 
 class EasyJetCrawler:
@@ -196,7 +201,6 @@ class EasyJetCrawler:
         self.proxy_urls = proxy_urls
         self.num_workers = num_workers
         self.workers: List[BrowserWorker] = []
-        self.results = []
         self.total_processed = 0
         self.total_success = 0
         self.total_no_flights = 0
@@ -217,9 +221,47 @@ class EasyJetCrawler:
             "infants": int(params.get("ipax", [0])[0]),
         }
     
-    async def process_url(self, worker: BrowserWorker, url: str):
+    async def save_to_dataset(self, url: str, departure: str, arrival: str, 
+                              departure_date: str, return_date: Optional[str], data: Dict):
+        """Save result to individual dataset file like final.js does"""
+        # Create dataset folder if it doesn't exist
+        os.makedirs("dataset", exist_ok=True)
+        
+        # Create dataset name: departure-arrival-RT/OW-date
+        mode = "RT" if return_date else "OW"
+        dataset_name = f"{departure}-{arrival}-{mode}-{departure_date}"
+        dataset_file = f"dataset/{dataset_name}.json"
+        
+        # Load existing data if file exists
+        existing_data = []
+        if os.path.exists(dataset_file):
+            try:
+                with open(dataset_file, "r") as f:
+                    existing_data = json.load(f)
+                    if not isinstance(existing_data, list):
+                        existing_data = [existing_data]
+            except:
+                existing_data = []
+        
+        # Append new result
+        existing_data.append({
+            "_meta": {
+                "startUrl": url,
+                "fetchedAt": datetime.now().isoformat()
+            },
+            "payload": data
+        })
+        
+        # Save back to file
+        with open(dataset_file, "w") as f:
+            json.dump(existing_data, f, indent=2)
+    
+    async def process_url(self, worker: BrowserWorker, url: str, retry_count: int = 0):
         params = self.parse_deeplink(url)
         if not params["departure"] or not params["arrival"] or not params["departure_date"]:
+            async with self.lock:
+                self.total_processed += 1
+                self.total_blocked += 1
             return None
         
         result = await worker.make_api_call(
@@ -233,8 +275,15 @@ class EasyJetCrawler:
             url
         )
         
+        # Retry logic for failed requests (max 2 retries)
+        if result and result.get("status") in [403, "nav_failed"] and retry_count < 2:
+            await asyncio.sleep(random.uniform(2, 4))  # Wait before retry
+            return await self.process_url(worker, url, retry_count + 1)
+        
         async with self.lock:
             self.total_processed += 1
+            success = False
+            
             if result:
                 status = result.get("status")
                 if status == 200:
@@ -242,18 +291,29 @@ class EasyJetCrawler:
                         data = json.loads(result["data"])
                         if "errors" not in data:
                             self.total_success += 1
-                            self.results.append({
-                                "_meta": {"url": url, "captured_at": datetime.now().isoformat()},
-                                "payload": data
-                            })
+                            success = True
+                            # Save to individual dataset file
+                            await self.save_to_dataset(
+                                url, 
+                                params["departure"], 
+                                params["arrival"],
+                                params["departure_date"],
+                                params["return_date"],
+                                data
+                            )
                         else:
                             error_code = data.get("errors", {}).get("customCode", "UNKNOWN")
                             if error_code == "Connectivity_2":
                                 self.total_no_flights += 1
-                                self.results.append({
-                                    "_meta": {"url": url, "captured_at": datetime.now().isoformat()},
-                                    "payload": {"no_flights": True}
-                                })
+                                # Save no flights result
+                                await self.save_to_dataset(
+                                    url, 
+                                    params["departure"], 
+                                    params["arrival"],
+                                    params["departure_date"],
+                                    params["return_date"],
+                                    {"no_flights": True}
+                                )
                             else:
                                 self.total_blocked += 1
                     except json.JSONDecodeError:
@@ -264,8 +324,17 @@ class EasyJetCrawler:
                     self.total_blocked += 1
             else:
                 self.total_blocked += 1
+            
+            # Show progress every 10 URLs processed (matching final.js)
+            if self.total_processed % 10 == 0:
+                elapsed_time = time.time() - self.start_time
+                rate = self.total_processed / (elapsed_time / 60) if elapsed_time > 0 else 0
+                total_failed = self.total_blocked + (self.total_processed - self.total_success - self.total_no_flights - self.total_blocked)
+                
+                print(f"📊 Progress: {self.total_processed} processed ({self.total_success} success, {total_failed} failed) - {rate:.1f} URLs/min")
         
-        await asyncio.sleep(random.uniform(2.0, 4.0))
+        # Reduced delay between requests - faster processing
+        await asyncio.sleep(random.uniform(0.5, 1.5))
     
     async def worker_task(self, worker: BrowserWorker, urls: List[str]):
         for url in urls:
@@ -275,12 +344,9 @@ class EasyJetCrawler:
         with open(self.input_file, "r") as f:
             urls = [line.strip() for line in f if line.strip()]
         
-        print(f"\n{'='*60}")
-        print(f"🎯 TARGET: {len(urls)} URLs")
-        print(f"📊 Workers: {self.num_workers}")
-        print(f"📊 Proxies: {len(self.proxy_urls)}")
-        print(f"⚡ METHOD: Direct browser API calls (no httpx)")
-        print(f"{'='*60}\n")
+        print(f"\n🚀 Starting crawler with {len(urls)} URLs")
+        print(f"⚡ Workers: {self.num_workers} | Proxies: {len(self.proxy_urls)}")
+     
         
         self.start_time = time.time()
         
@@ -308,23 +374,17 @@ class EasyJetCrawler:
             await worker.close()
         
         total_time = time.time() - self.start_time
-        output_file = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(output_file, "w") as f:
-            json.dump(self.results, f, indent=2)
+        rate = self.total_processed / (total_time / 60) if total_time > 0 else 0
+        total_failed = len(urls) - self.total_success
         
-        print(f"\n{'='*60}")
-        print(f"🏁 FINAL RESULTS")
-        print(f"{'='*60}")
-        print(f"Total processed: {len(urls)}")
-        print(f"✅ Successful: {self.total_success}")
-        print(f"⚠️ No flights: {self.total_no_flights}")
-        print(f"🚫 Blocked: {self.total_blocked}")
-        print(f"❌ Failed: {len(urls) - self.total_success - self.total_no_flights - self.total_blocked}")
-        print(f"Success rate: {(self.total_success / len(urls)) * 100:.1f}%")
-        print(f"⚡ Rate: {len(urls) / (total_time / 60):.1f} URLs/minute")
-        print(f"⏱️ Total time: {total_time/60:.1f} minutes")
-        print(f"💾 Results saved: {output_file}")
-        print(f"{'='*60}\n")
+        print(f"\n=== FINAL SUMMARY ===")
+        print(f"Total processed: {self.total_processed}")
+        print(f"Successful: {self.total_success}")
+        print(f"Failed: {total_failed}")
+        print(f"Success rate: {((self.total_success / self.total_processed) * 100):.1f}%")
+        print(f"Total time: {(total_time / 60):.2f} minutes")
+        print(f"Average rate: {rate:.2f} URLs/minute")
+        print(f"=====================\n")
 
 
 if __name__ == "__main__":
@@ -335,14 +395,15 @@ if __name__ == "__main__":
         sys.exit(1)
     
     input_file = sys.argv[1]
-    num_workers = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 5
+    num_workers = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 10  # Increased from 5 to 10
     start_idx = 3 if len(sys.argv) > 2 and sys.argv[2].isdigit() else 2
     proxies = sys.argv[start_idx:] if len(sys.argv) > start_idx else []
     
     if not proxies:
-        default_proxy = "http://mpuT1QFVbv_easyjet-country-GB:easyjet223@network.joinmassive.com:65534/"
-        print(f"ℹ️  No proxies provided, using default proxy\n")
-        proxies = [default_proxy]
+        # Generate multiple proxy sessions for better distribution and less blocking
+        base_proxy = "http://mpuT1QFVbv_easyjet-country-GB-session-{}:easyjet223@network.joinmassive.com:65534/"
+        proxies = [base_proxy.format(i) for i in range(1, 21)]  # 20 different sessions
+        print(f"ℹ️  Using {len(proxies)} proxy sessions for better distribution\n")
     
     crawler = EasyJetCrawler(input_file, proxies, num_workers)
     asyncio.run(crawler.run())
