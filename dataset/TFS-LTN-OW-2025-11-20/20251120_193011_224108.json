@@ -1,0 +1,199 @@
+{
+  "_meta": {
+    "startUrl": "https://www.easyjet.com/deeplink?lang=EN&dep=TFS&dest=LTN&dd=2025-11-20&apax=1&cpax=0&ipax=0",
+    "capturedBy": "browser-api",
+    "fetchedAt": "2025-11-20T19:30:11.224108"
+  },
+  "payload": {
+    "journeyPairs": [
+      {
+        "isRoundTrip": false,
+        "arrivalAirportCode": "LTN",
+        "arrivalAirportName": "London Luton",
+        "departureAirportCode": "TFS",
+        "departureAirportName": "Tenerife South",
+        "outbound": {
+          "departureAirportCode": "TFS",
+          "departureAirportName": "Tenerife South",
+          "arrivalAirportName": "London Luton",
+          "arrivalAirportCode": "LTN",
+          "arrivalMarketAreaName": "London",
+          "departureMarketAreaName": "Canary Islands",
+          "flights": {
+            "2025-11-19": [],
+            "2025-11-20": [
+              {
+                "flightSequence": 1,
+                "flightNumber": "2342",
+                "iataCarrierCode": "U2",
+                "icaoCarrierCode": "EZY",
+                "localDepartureDateTime": "2025-11-20T17:30:00",
+                "localArrivalDateTime": "2025-11-20T21:50:00",
+                "departureAirportCode": "TFS",
+                "departureAirportName": "Tenerife South",
+                "departureAirportDateTimeZoneOffset": "+00:00",
+                "arrivalAirportCode": "LTN",
+                "arrivalAirportName": "London Luton",
+                "arrivalAirportDateTimeZoneOffset": "+00:00",
+                "saleableStatus": "AVAILABLE",
+                "flightStatus": "OPEN",
+                "availability": [
+                  {
+                    "fareFamilyCode": "STANDARD",
+                    "passengerTypes": [
+                      "ADT"
+                    ],
+                    "unitsAvailableAtThisPrice": 19,
+                    "totalUnitsAvailable": 39
+                  }
+                ],
+                "flightIdentification": "6ded8bcd-a26b-c44e-75a8-1081d4e7669e",
+                "flightSegmentId": "20251120TFSLTN2342",
+                "soldOut": false,
+                "fares": {
+                  "ADT": {
+                    "STANDARD": {
+                      "benefits": [
+                        {
+                          "id": "CABIN_BAG",
+                          "name": "Cabin Bag",
+                          "description": "Included small cabin bag",
+                          "legacyId": "B0001"
+                        }
+                      ],
+                      "unitsAvailableAtThisPrice": 9,
+                      "unitPrice": {
+                        "netPrice": 55.99,
+                        "netPriceInclusiveOfFees": 55.99,
+                        "isBlendedPrice": false,
+                        "fees": [],
+                        "taxes": [],
+                        "totalTaxes": 0,
+                        "totalTaxesInclusiveOfFees": 0,
+                        "totalFees": 0,
+                        "grossPrice": 55.99
+                      },
+                      "uri": "/air/search/691f25f2e2730d1d2004891e/itinerary-prices/HK_1j39RDdoJcNaUBp_hH_5-jAzSYM"
+                    }
+                  }
+                },
+                "lowestFare": false,
+                "currency": "EUR",
+                "baseCurrency": "EUR",
+                "displayPrice": [
+                  "\u20ac55",
+                  ".99"
+                ]
+              }
+            ],
+            "2025-11-21": [
+              {
+                "flightSequence": 1,
+                "flightNumber": "2304",
+                "iataCarrierCode": "U2",
+                "icaoCarrierCode": "EZY",
+                "localDepartureDateTime": "2025-11-21T12:45:00",
+                "localArrivalDateTime": "2025-11-21T17:10:00",
+                "departureAirportCode": "TFS",
+                "departureAirportName": "Tenerife South",
+                "departureAirportDateTimeZoneOffset": "+00:00",
+                "arrivalAirportCode": "LTN",
+                "arrivalAirportName": "London Luton",
+                "arrivalAirportDateTimeZoneOffset": "+00:00",
+                "saleableStatus": "AVAILABLE",
+                "flightStatus": "OPEN",
+                "availability": [
+                  {
+                    "fareFamilyCode": "STANDARD",
+                    "passengerTypes": [
+                      "ADT"
+                    ],
+                    "unitsAvailableAtThisPrice": 4,
+                    "totalUnitsAvailable": 19
+                  }
+                ],
+                "flightIdentification": "eeb50a28-5cf7-6bc3-a7fc-99f14615743f",
+                "flightSegmentId": "20251121TFSLTN2304",
+                "soldOut": false,
+                "fares": {
+                  "ADT": {
+                    "STANDARD": {
+                      "benefits": [
+                        {
+                          "id": "CABIN_BAG",
+                          "name": "Cabin Bag",
+                          "description": "Included small cabin bag",
+                          "legacyId": "B0001"
+                        }
+                      ],
+                      "unitsAvailableAtThisPrice": 4,
+                      "unitPrice": {
+                        "netPrice": 47.99,
+                        "netPriceInclusiveOfFees": 47.99,
+                        "isBlendedPrice": false,
+                        "fees": [],
+                        "taxes": [],
+                        "totalTaxes": 0,
+                        "totalTaxesInclusiveOfFees": 0,
+                        "totalFees": 0,
+                        "grossPrice": 47.99
+                      },
+                      "uri": "/air/search/691f25f2e2730d1d2004891e/itinerary-prices/HK_sel2Kks_NJwunWT5BH6gx51YWww"
+                    }
+                  }
+                },
+                "lowestFare": true,
+                "currency": "EUR",
+                "baseCurrency": "EUR",
+                "displayPrice": [
+                  "\u20ac47",
+                  ".99"
+                ]
+              }
+            ]
+          },
+          "isArrivalMarketGroupSearch": false,
+          "isDepartureMarketGroupSearch": false
+        }
+      }
+    ],
+    "metaData": {
+      "emptyPrice": {
+        "raw": 0,
+        "displayText": [
+          "\u20ac0",
+          ".00"
+        ]
+      },
+      "currencyCode": "EUR",
+      "baseCurrencyCode": "EUR",
+      "isoCurrencyCode": "EUR",
+      "isoBaseCurrencyCode": "EUR",
+      "requestPayload": {
+        "journey": {
+          "outboundWindow": 1,
+          "outboundDate": "2025-11-20",
+          "departureAirportOrMarketCode": "TFS",
+          "arrivalAirportOrMarketCode": "LTN",
+          "outReturnWindow": 1
+        },
+        "passengerMix": {
+          "ADT": 1,
+          "CHD": 0,
+          "INF": 0
+        },
+        "labiQueryMeta": "TFSLTN2025-11-202025-11-20truefalseENGBP810f798e-9d66-4695-9175-e357c4caf5a3",
+        "languageCode": "en"
+      },
+      "labiQuery": "/LAB/api/StoreSearch/2025-11-20-14-28-10/1d000e47-ca5c-4de9-16d4-0751fe8bfbce/TFS/LTN/2025-11-20/2025-11-19/1/0/0/False/EN/EUR/1?ref=7E83875F7BC1662EB20B5260F2B38FAC3277A3A2AF443119D90727F40058BEB0",
+      "labiQueryMeta": "TFSLTN2025-11-202025-11-20falsetrueENEUR1d000e47-ca5c-4de9-16d4-0751fe8bfbce"
+    },
+    "passengers": [
+      {
+        "passengerId": "0",
+        "passengerTypeCode": "ADT"
+      }
+    ],
+    "X-DLX-Session-ID": "691f25f2e2730d1d2004891c"
+  }
+}
