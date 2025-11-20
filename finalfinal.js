@@ -144,13 +144,36 @@ router.addHandler('HOME', async ({ page, request }) => {
 
     try {
         // Navigate to the page and let it fully load
-        await page.goto(startUrl, { 
-            waitUntil: 'networkidle2',
-            timeout: 90000 
-        });
+        // Navigate to the page and let it fully load
+await page.goto(startUrl, { 
+    waitUntil: 'networkidle2',
+    timeout: 90000 
+});
 
-        // Wait for the page to fully initialize and set cookies
-        log.info('Waiting for page to initialize and set Akamai cookies...');
+// --- CLICK COOKIE CONSENT AND MODAL ---
+try {
+    // Click "Continue" on modal first
+    const continueButton = await page.$('button[data-cy="welcome-modal__button--confirm"]');
+    if (continueButton) {
+        await continueButton.click();
+        log.info('Clicked Continue button');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+
+    // Then click "Accept Cookies" if visible
+    const acceptCookiesButton = await page.$('#ensCloseBanner');
+    if (acceptCookiesButton) {
+        await acceptCookiesButton.click();
+        log.info('Clicked Accept Cookies button');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+} catch (clickErr) {
+    log.warning('Modal/cookie click failed (may not exist)', { error: clickErr.message });
+}
+
+
+// Wait for the page to fully initialize and set cookies
+log.info('Waiting for page to initialize and set Akamai cookies...');
         await new Promise(resolve => setTimeout(resolve, 8000));
 
         // Try to wait for flight results to appear (but don't fail if they don't)
@@ -383,13 +406,13 @@ const main = async () => {
         useSessionPool: true,
         maxRequestRetries: 3, // Reduced retries (if it fails, it's likely blocked)
         proxyConfiguration,
-        minConcurrency: 3, // Reduced from 6
-        maxConcurrency: 6,  // Reduced from 10
+        minConcurrency: 1, // Reduced from 6
+        maxConcurrency: 3,  // Reduced from 10
         maxRequestsPerMinute: 40, // Add rate limiting
         launchContext: {
             useChrome: true,
             launchOptions: {
-                headless: true,
+                headless: false,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',

@@ -276,8 +276,8 @@ const main = async () => {
         maxRequestRetries: 3,
         proxyConfiguration,
         
-        minConcurrency: 10,
-        maxConcurrency: 15, // Reduced to fit in 4GB RAM (15 browsers × 270MB ≈ 4GB)
+        minConcurrency: 1,
+        maxConcurrency: 5, // Reduced to fit in 4GB RAM (15 browsers × 270MB ≈ 4GB)
         maxRequestsPerMinute: 200, // Keep high request rate
         
         launchContext: {

@@ -3,3 +3,4 @@ output/
 *.log
 .env
 .DS_Store 
+venv/
